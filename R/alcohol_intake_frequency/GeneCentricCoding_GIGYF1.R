@@ -20,13 +20,12 @@ prs_pc_cols <- paste0("prs_pc", 1:5)
 outcome_column <- "alcohol_intake_frequency"
 id_column <- "userId"
 
-obj.STAAR.UKB.alcohol_intake_frequency <- NullModel(
+obj.STAAR.UKB.alcohol_intake_frequency <- NullModel_Ordinal(
   phenofile = data_for_null_model,
   outcomeCol = outcome_column,
   sampleCol = id_column,
   covCol = base_covar_cols,
   PRSCol = prs_pc_cols,
-  LOCO = FALSE,
   verbose = TRUE
 )
 
@@ -94,13 +93,13 @@ format_results <- function(results_list) {
     `ACAT-V(1,1)` = p_matrix["ACAT-(1,1)", "Beta"],
 
     # Extract combined p-values (across annotations) for each test type.
-    # These come from the "Combined_P" column.
-    `STAAR-S(1,25)` = p_matrix["SKAT-(1,25)", "Combined_P"],
-    `STAAR-S(1,1)`  = p_matrix["SKAT-(1,1)", "Combined_P"],
-    `STAAR-B(1,25)` = p_matrix["Burden-(1,25)", "Combined_P"],
-    `STAAR-B(1,1)`  = p_matrix["Burden-(1,1)", "Combined_P"],
-    `STAAR-A(1,25)` = p_matrix["ACAT-(1,25)", "Combined_P"],
-    `STAAR-A(1,1)`  = p_matrix["ACAT-(1,1)", "Combined_P"],
+    # These come from the "results_OrdinalSTAAR" column.
+    `STAAR-S(1,25)` = p_matrix["SKAT-(1,25)", "results_OrdinalSTAAR"],
+    `STAAR-S(1,1)`  = p_matrix["SKAT-(1,1)", "results_OrdinalSTAAR"],
+    `STAAR-B(1,25)` = p_matrix["Burden-(1,25)", "results_OrdinalSTAAR"],
+    `STAAR-B(1,1)`  = p_matrix["Burden-(1,1)", "results_OrdinalSTAAR"],
+    `STAAR-A(1,25)` = p_matrix["ACAT-(1,25)", "results_OrdinalSTAAR"],
+    `STAAR-A(1,1)`  = p_matrix["ACAT-(1,1)", "results_OrdinalSTAAR"],
 
     # Overall omnibus p-values from the main list
     `ACAT-O` = results_list$ACAT_O,
@@ -118,20 +117,20 @@ for (current_chr in unique_chromosomes) {
 
   message(paste0("\n--- Analyzing chromosome: ", current_chr, " ---"))
 
-  # gds_path <- paste0("ukb.500k.wgs.chr", current_chr, ".pass.annotated.gds")
-  #
-  # if (!file.exists(gds_path)) {
-  #   message(paste0("GDS file not found locally. Downloading from DNAnexus..."))
-  #   gds_dx_path <- paste0("/UKB_500K_WGS_AGDS_uncompressed_newQClabel_HWE/", gds_path)
-  #   system(paste0("dx download -f ", gds_dx_path))
-  # }
-  # if (!file.exists(gds_path)) {
-  #   warning(paste0("SKIPPING CHROMOSOME ", current_chr, ": Failed to find GDS file: ", gds_path))
-  #   next
-  # }
-  #
-  # genofile <- seqOpen(gds_path)
-  # message(paste0("Successfully opened aGDS file for chr", current_chr))
+  gds_path <- paste0("ukb.500k.wgs.chr", current_chr, ".pass.annotated.gds")
+
+  if (!file.exists(gds_path)) {
+    message(paste0("GDS file not found locally. Downloading from DNAnexus..."))
+    gds_dx_path <- paste0("/UKB_500K_WGS_AGDS_uncompressed_newQClabel_HWE/", gds_path)
+    system(paste0("dx download -f ", gds_dx_path))
+  }
+  if (!file.exists(gds_path)) {
+    warning(paste0("SKIPPING CHROMOSOME ", current_chr, ": Failed to find GDS file: ", gds_path))
+    next
+  }
+
+  genofile <- seqOpen(gds_path)
+  message(paste0("Successfully opened aGDS file for chr", current_chr))
 
   tasks_for_this_chr <- analysis_tasks[analysis_tasks$chr == current_chr, ]
 
@@ -169,8 +168,7 @@ for (current_chr in unique_chromosomes) {
         use_SPA = NULL,
         SPA_filter = TRUE,
         SPA_filter_cutoff = 0.05,
-        verbose = FALSE,
-        instability_variance_cutoff = 10000
+        verbose = FALSE
       )
     }, error = function(e) {
       message(paste("An error occurred during Ordinal_GeneCentricCoding: ", e$message))
@@ -188,11 +186,11 @@ for (current_chr in unique_chromosomes) {
       dx_upload_command_rdata <- paste0("dx upload ", output_rdata_name, " --path ", output_path)
       system(dx_upload_command_rdata)
 
-      message("  -> Formatting result for summary CSV...")
-      formatted_row <- format_results(analysis_results_list_obj)
-      if(!is.null(formatted_row)){
-        all_formatted_results_list[[length(all_formatted_results_list) + 1]] <- formatted_row
-      }
+      # message("  -> Formatting result for summary CSV...")
+      # formatted_row <- format_results(analysis_results_list_obj)
+      # if(!is.null(formatted_row)){
+      #   all_formatted_results_list[[length(all_formatted_results_list) + 1]] <- formatted_row
+      # }
 
     } else {
       message(paste0("  -> No valid results for '", gene_name, "' category '", categories, "'. Skipping file save and formatting."))
@@ -201,21 +199,21 @@ for (current_chr in unique_chromosomes) {
 
   message(paste0("\n--- Combining and saving CSV summary for chromosome ", current_chr, " ---"))
 
-  if (length(all_formatted_results_list) > 0) {
-
-    final_summary_table <- dplyr::bind_rows(all_formatted_results_list)
-    output_csv_name <- paste0("OrdinalSTAAR_summary_chr", current_chr, ".csv")
-
-    write.csv(final_summary_table, file = output_csv_name, row.names = FALSE, quote = FALSE, na = "NA")
-
-    dx_upload_command_csv <- paste0("dx upload ", output_csv_name, " --path ", output_path)
-    system(dx_upload_command_csv)
-
-    message(paste0("Successfully saved and uploaded CSV summary for chr", current_chr, "."))
-
-  } else {
-    message(paste0("No results were generated for chromosome ", current_chr, " to save in CSV."))
-  }
+  # if (length(all_formatted_results_list) > 0) {
+  #
+  #   final_summary_table <- dplyr::bind_rows(all_formatted_results_list)
+  #   output_csv_name <- paste0("OrdinalSTAAR_summary_chr", current_chr, ".csv")
+  #
+  #   write.csv(final_summary_table, file = output_csv_name, row.names = FALSE, quote = FALSE, na = "NA")
+  #
+  #   dx_upload_command_csv <- paste0("dx upload ", output_csv_name, " --path ", output_path)
+  #   system(dx_upload_command_csv)
+  #
+  #   message(paste0("Successfully saved and uploaded CSV summary for chr", current_chr, "."))
+  #
+  # } else {
+  #   message(paste0("No results were generated for chromosome ", current_chr, " to save in CSV."))
+  # }
 
   # seqClose(genofile)
 }
