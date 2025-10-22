@@ -1,6 +1,3 @@
-
-
-# --- 0. 环境设置与库加载 ---
 message("--- Step 0: Setting up environment and loading libraries ---")
 
 system("dx-restore-folder /STAARpipeline/R_packages/rstudio_workbench_ukbrap_trial.zilinli_iu.2024-11-24T06-56-17.tar.gz")
@@ -20,12 +17,13 @@ prs_pc_cols <- paste0("prs_pc", 1:5)
 outcome_column <- "alcohol_intake_frequency"
 id_column <- "userId"
 
-obj.STAAR.UKB.alcohol_intake_frequency <- NullModel_Ordinal(
+obj.STAAR.UKB.alcohol_intake_frequency <- NullModel(
   phenofile = data_for_null_model,
   outcomeCol = outcome_column,
   sampleCol = id_column,
   covCol = base_covar_cols,
   PRSCol = prs_pc_cols,
+  LOCO = FALSE,
   verbose = TRUE
 )
 
@@ -46,15 +44,10 @@ output_path <- "/UKB_500K_WGS_staarpipeline/Multiclass/alcohol_intake_frequency/
 message("--- Step 3: Defining Analysis Tasks ---")
 
 analysis_tasks <- data.frame(
-  chr = c(7, 7, 7, 7, 7, 7, 7),
-  gene_name = c("GIGYF1", "GIGYF1", "GIGYF1","GIGYF1","GIGYF1","GIGYF1","GIGYF1"),
+  chr = c(4, 4, 4, 4, 4, 4, 4),
+  gene_name = c("ADH1C", "ADH1C", "ADH1C","ADH1C","ADH1C","ADH1C","ADH1C"),
   categories = c("plof_ds", "plof", "disruptive_missense", "ptv","synonymous","ptv_ds","missense")
 )
-# analysis_tasks <- data.frame(
-#   chr = c(7),
-#   gene_name = c("GIGYF1"),
-#   categories = c("plof_ds")
-# )
 unique_chromosomes <- unique(analysis_tasks$chr)
 
 message("--- Step 4: Defining Format Results ---")
@@ -79,7 +72,6 @@ format_results <- function(results_list) {
     `#SNV` = results_list$num_variant,
     cMAC = results_list$cMAC,
 
-    # --- [THE FIX IS HERE] ---
     # Extract p-values by their proper COLUMN NAMES, not by index (1, 2).
     # "Beta" column corresponds to the p-value without annotation weights.
 
@@ -93,13 +85,13 @@ format_results <- function(results_list) {
     `ACAT-V(1,1)` = p_matrix["ACAT-(1,1)", "Beta"],
 
     # Extract combined p-values (across annotations) for each test type.
-    # These come from the "results_OrdinalSTAAR" column.
-    `STAAR-S(1,25)` = p_matrix["SKAT-(1,25)", "results_OrdinalSTAAR"],
-    `STAAR-S(1,1)`  = p_matrix["SKAT-(1,1)", "results_OrdinalSTAAR"],
-    `STAAR-B(1,25)` = p_matrix["Burden-(1,25)", "results_OrdinalSTAAR"],
-    `STAAR-B(1,1)`  = p_matrix["Burden-(1,1)", "results_OrdinalSTAAR"],
-    `STAAR-A(1,25)` = p_matrix["ACAT-(1,25)", "results_OrdinalSTAAR"],
-    `STAAR-A(1,1)`  = p_matrix["ACAT-(1,1)", "results_OrdinalSTAAR"],
+    # These come from the "Combined_P" column.
+    `STAAR-S(1,25)` = p_matrix["SKAT-(1,25)", "Combined_P"],
+    `STAAR-S(1,1)`  = p_matrix["SKAT-(1,1)", "Combined_P"],
+    `STAAR-B(1,25)` = p_matrix["Burden-(1,25)", "Combined_P"],
+    `STAAR-B(1,1)`  = p_matrix["Burden-(1,1)", "Combined_P"],
+    `STAAR-A(1,25)` = p_matrix["ACAT-(1,25)", "Combined_P"],
+    `STAAR-A(1,1)`  = p_matrix["ACAT-(1,1)", "Combined_P"],
 
     # Overall omnibus p-values from the main list
     `ACAT-O` = results_list$ACAT_O,
@@ -168,7 +160,8 @@ for (current_chr in unique_chromosomes) {
         use_SPA = NULL,
         SPA_filter = TRUE,
         SPA_filter_cutoff = 0.05,
-        verbose = FALSE
+        verbose = FALSE,
+        instability_variance_cutoff = 10000
       )
     }, error = function(e) {
       message(paste("An error occurred during Ordinal_GeneCentricCoding: ", e$message))
@@ -186,11 +179,11 @@ for (current_chr in unique_chromosomes) {
       dx_upload_command_rdata <- paste0("dx upload ", output_rdata_name, " --path ", output_path)
       system(dx_upload_command_rdata)
 
-      # message("  -> Formatting result for summary CSV...")
-      # formatted_row <- format_results(analysis_results_list_obj)
-      # if(!is.null(formatted_row)){
-      #   all_formatted_results_list[[length(all_formatted_results_list) + 1]] <- formatted_row
-      # }
+      message("  -> Formatting result for summary CSV...")
+      formatted_row <- format_results(analysis_results_list_obj)
+      if(!is.null(formatted_row)){
+        all_formatted_results_list[[length(all_formatted_results_list) + 1]] <- formatted_row
+      }
 
     } else {
       message(paste0("  -> No valid results for '", gene_name, "' category '", categories, "'. Skipping file save and formatting."))
@@ -199,23 +192,23 @@ for (current_chr in unique_chromosomes) {
 
   message(paste0("\n--- Combining and saving CSV summary for chromosome ", current_chr, " ---"))
 
-  # if (length(all_formatted_results_list) > 0) {
-  #
-  #   final_summary_table <- dplyr::bind_rows(all_formatted_results_list)
-  #   output_csv_name <- paste0("OrdinalSTAAR_summary_chr", current_chr, ".csv")
-  #
-  #   write.csv(final_summary_table, file = output_csv_name, row.names = FALSE, quote = FALSE, na = "NA")
-  #
-  #   dx_upload_command_csv <- paste0("dx upload ", output_csv_name, " --path ", output_path)
-  #   system(dx_upload_command_csv)
-  #
-  #   message(paste0("Successfully saved and uploaded CSV summary for chr", current_chr, "."))
-  #
-  # } else {
-  #   message(paste0("No results were generated for chromosome ", current_chr, " to save in CSV."))
-  # }
+  if (length(all_formatted_results_list) > 0) {
 
-  # seqClose(genofile)
+    final_summary_table <- dplyr::bind_rows(all_formatted_results_list)
+    output_csv_name <- paste0("OrdinalSTAAR_summary_chr", current_chr, ".csv")
+
+    write.csv(final_summary_table, file = output_csv_name, row.names = FALSE, quote = FALSE, na = "NA")
+
+    dx_upload_command_csv <- paste0("dx upload ", output_csv_name, " --path ", output_path)
+    system(dx_upload_command_csv)
+
+    message(paste0("Successfully saved and uploaded CSV summary for chr", current_chr, "."))
+
+  } else {
+    message(paste0("No results were generated for chromosome ", current_chr, " to save in CSV."))
+  }
+
+  seqClose(genofile)
 }
 
 message("\n--- Analysis Complete ---")

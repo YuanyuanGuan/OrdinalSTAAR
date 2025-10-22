@@ -35,6 +35,7 @@ plof <- function(gene_name, genofile, objNull, genes_info, variant_type = NULL,
   
   is.in <- (SNVlist) & (position >= sub_start_loc) & (position <= sub_end_loc)
   variant.id.gene <- variant.id[is.in]
+<<<<<<< HEAD
   seqSetFilter(genofile, variant.id = variant.id.gene, sample.id = phenotype.id)
   
   ## plof: stopgain/stoploss + splicing 家族
@@ -56,6 +57,102 @@ plof <- function(gene_name, genofile, objNull, genes_info, variant_type = NULL,
   } else if (rm_long && length(variant.id.gene) > rm_long_cutoff) {
     message(paste0("Variants number of *plof* is more than ", rm_long_cutoff, ", will skip this category..."))
     result.plof <- list("OrdinalSTAAR_O" = NA)
+=======
+
+  seqSetFilter(genofile,variant.id=variant.id.gene,sample.id=phenotype.id)
+
+  # Define pLoF variants
+  GENCODE.EXONIC.Category <- seqGetData(genofile, paste0(Annotation_dir,Annotation_name_catalog$dir[which(Annotation_name_catalog$name=="GENCODE.EXONIC.Category")]))
+  GENCODE.Category <- seqGetData(genofile, paste0(Annotation_dir,Annotation_name_catalog$dir[which(Annotation_name_catalog$name=="GENCODE.Category")]))
+  variant.id.gene.current <- seqGetData(genofile, "variant.id")
+
+  lof.in.plof <- (GENCODE.EXONIC.Category=="stopgain")|(GENCODE.EXONIC.Category=="stoploss")|(GENCODE.Category=="splicing")|(GENCODE.Category=="exonic;splicing")|(GENCODE.Category=="ncRNA_splicing")|(GENCODE.Category=="ncRNA_exonic;splicing")
+  variant.id.plof <- variant.id.gene.current[lof.in.plof]
+
+  if (length(variant.id.plof) < rare_num_cutoff) {
+    message("Variants number of *plof* is less than ", rare_num_cutoff, ", skipping...")
+    return(c(list("gene_info" = gene_info_kk, "category" = "plof"), list("OrdinalSTAAR_O" = NA)))
+  }
+  if (rm_long && length(variant.id.plof) > rm_long_cutoff) {
+    message(paste0("Variants number of *plof* is more than ", rm_long_cutoff, ", skipping..."))
+    return(c(list("gene_info" = gene_info_kk, "category" = "plof"), list("OrdinalSTAAR_O" = NA)))
+  }
+
+  seqSetFilter(genofile,variant.id=variant.id.plof,sample.id=phenotype.id)
+
+  # --- Part 2: Genotype and Annotation Extraction ---
+  Anno.Int.PHRED.sub <- NULL
+  if(variant_type != "Indel" && Use_annotation_weights){
+    anno_list <- lapply(Annotation_name, function(name) {
+      if(name %in% Annotation_name_catalog$name) {
+        dir <- Annotation_name_catalog$dir[which(Annotation_name_catalog$name==name)]
+        seqGetData(genofile, paste0(Annotation_dir, dir))
+      }
+    })
+    Anno.Int.PHRED.sub <- as.data.frame(do.call(cbind, anno_list))
+    colnames(Anno.Int.PHRED.sub) <- Annotation_name[sapply(anno_list, function(x) !is.null(x))]
+  }
+
+  id.genotype <- seqGetData(genofile,"sample.id")
+  id.genotype.merge <- data.frame(id.genotype, index=seq_along(id.genotype))
+  phenotype.id.merge <- data.frame(phenotype.id)
+  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge, id.genotype.merge, by=c("phenotype.id"="id.genotype"))
+  id.genotype.match <- phenotype.id.merge$index
+
+  Geno <- seqGetData(genofile, "$dosage")[id.genotype.match, , drop=FALSE]
+
+  # --- Part 3: Filtering, Imputation, AND NA REMOVAL ---
+  getGeno = genoFlipRV(Geno=Geno, geno_missing_imputation=geno_missing_imputation, geno_missing_cutoff=geno_missing_cutoff,
+                       min_maf_cutoff=min_maf_cutoff, rare_maf_cutoff=rare_maf_cutoff, rare_num_cutoff=rare_num_cutoff)
+
+  Geno = getGeno$Geno
+  MAF = getGeno$G_summary$MAF
+  MAC = getGeno$G_summary$MAC
+
+  if(!is.null(Anno.Int.PHRED.sub)) {
+    Anno.Int.PHRED.sub = Anno.Int.PHRED.sub[getGeno$include_index, , drop = FALSE]
+  }
+
+  if (!is.null(Anno.Int.PHRED.sub)) {
+    complete_anno_idx <- complete.cases(Anno.Int.PHRED.sub)
+    if (sum(!complete_anno_idx) > 0) {
+      message(paste0("INFO: Found and removed ", sum(!complete_anno_idx), " variant(s) with missing annotation scores."))
+      Geno <- Geno[, complete_anno_idx, drop = FALSE]
+      MAF <- MAF[complete_anno_idx]
+      MAC <- MAC[complete_anno_idx]
+      Anno.Int.PHRED.sub <- Anno.Int.PHRED.sub[complete_anno_idx, , drop = FALSE]
+    }
+  }
+
+  if (is.null(dim(Geno)) || ncol(Geno) < rare_num_cutoff) {
+    message("After all filtering, variants number of *plof* is less than ", rare_num_cutoff, ", skipping...")
+    return(c(list("gene_info" = gene_info_kk, "category" = "plof"), list("OrdinalSTAAR_O" = NA)))
+  }
+
+  # --- Part 4: Detect and Remove Unstable Variants ---
+  message("Performing pre-check for numerically unstable variants...")
+  pre_check_stats <- Ordinal_exactScore(objNull = objNull, G_mat = Geno, use_SPA = FALSE)
+
+  unstable_idx <- which(pre_check_stats$result$Variance > instability_variance_cutoff)
+
+  if (length(unstable_idx) > 0) {
+    message(paste0("WARNING: Found and removed ", length(unstable_idx), " unstable variant(s)."))
+
+    stable_idx <- setdiff(1:ncol(Geno), unstable_idx)
+
+    Geno <- Geno[, stable_idx, drop = FALSE]
+    MAF <- MAF[stable_idx]
+    MAC <- MAC[stable_idx]
+
+    if (!is.null(Anno.Int.PHRED.sub)) {
+      Anno.Int.PHRED.sub <- Anno.Int.PHRED.sub[stable_idx, , drop = FALSE]
+    }
+
+    if (ncol(Geno) < rare_num_cutoff) {
+      message("After removing unstable variants, remaining number is less than ", rare_num_cutoff, ", skipping...")
+      return(c(list("gene_info" = gene_info_kk, "category" = "plof"), list("OrdinalSTAAR_O" = NA)))
+    }
+>>>>>>> 1440f33c6924972308e29748eec4d7b58c73bfb3
   } else {
     
     seqSetFilter(genofile, variant.id = variant.id.gene, sample.id = phenotype.id)

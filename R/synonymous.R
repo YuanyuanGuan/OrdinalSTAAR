@@ -94,6 +94,7 @@ synonymous <- function(gene_name, genofile, objNull, genes_info, variant_type = 
         colnames(Anno.Int.PHRED.sub) <- Anno.Int.PHRED.sub.name
       }
     }
+<<<<<<< HEAD
     
     ## genotype id
     id.genotype <- seqGetData(genofile, "sample.id")
@@ -129,6 +130,63 @@ synonymous <- function(gene_name, genofile, objNull, genes_info, variant_type = 
     MAF  <- getGeno$G_summary$MAF
     MAC  <- getGeno$G_summary$MAC
     
+=======
+    Anno.Int.PHRED.sub <- data.frame(Anno.Int.PHRED.sub)
+    colnames(Anno.Int.PHRED.sub) <- Anno.Int.PHRED.sub.name
+  }
+
+  id.genotype <- seqGetData(genofile,"sample.id")
+  id.genotype.merge <- data.frame(id.genotype, index=seq_along(id.genotype))
+  phenotype.id.merge <- data.frame(phenotype.id)
+  phenotype.id.merge <- dplyr::left_join(phenotype.id.merge, id.genotype.merge, by=c("phenotype.id"="id.genotype"))
+  id.genotype.match <- phenotype.id.merge$index
+
+  Geno <- seqGetData(genofile, "$dosage")[id.genotype.match, , drop=FALSE]
+
+  # --- Part 3: Filtering, Imputation, AND NA REMOVAL ---
+  getGeno = genoFlipRV(Geno=Geno, geno_missing_imputation=geno_missing_imputation, geno_missing_cutoff=geno_missing_cutoff,
+                       min_maf_cutoff=min_maf_cutoff, rare_maf_cutoff=rare_maf_cutoff, rare_num_cutoff=rare_num_cutoff)
+
+  Geno = getGeno$Geno
+  MAF = getGeno$G_summary$MAF
+  MAC = getGeno$G_summary$MAC
+
+  if(!is.null(Anno.Int.PHRED.sub)) {
+    Anno.Int.PHRED.sub = Anno.Int.PHRED.sub[getGeno$include_index, , drop = FALSE]
+  }
+
+  if (!is.null(Anno.Int.PHRED.sub)) {
+    complete_anno_idx <- complete.cases(Anno.Int.PHRED.sub)
+    if (sum(!complete_anno_idx) > 0) {
+      message(paste0("INFO: Found and removed ", sum(!complete_anno_idx), " variant(s) with missing annotation scores."))
+      Geno <- Geno[, complete_anno_idx, drop = FALSE]
+      MAF <- MAF[complete_anno_idx]
+      MAC <- MAC[complete_anno_idx]
+      Anno.Int.PHRED.sub <- Anno.Int.PHRED.sub[complete_anno_idx, , drop = FALSE]
+    }
+  }
+
+  if (is.null(dim(Geno)) || ncol(Geno) < rare_num_cutoff) {
+    message("After all filtering, variants number of *synonymous* is less than ", rare_num_cutoff, ", skipping...")
+    return(c(list("gene_info" = gene_info_kk, "category" = "synonymous"), list("OrdinalSTAAR_O" = NA)))
+  }
+
+  # --- Part 4: Detect and Remove Unstable Variants ---
+  message("Performing pre-check for numerically unstable variants...")
+  pre_check_stats <- Ordinal_exactScore(objNull = objNull, G_mat = Geno, use_SPA = FALSE)
+
+  unstable_idx <- which(pre_check_stats$result$Variance > instability_variance_cutoff)
+
+  if (length(unstable_idx) > 0) {
+    message(paste0("WARNING: Found and removed ", length(unstable_idx), " unstable variant(s)."))
+
+    stable_idx <- setdiff(1:ncol(Geno), unstable_idx)
+
+    Geno <- Geno[, stable_idx, drop = FALSE]
+    MAF <- MAF[stable_idx]
+    MAC <- MAC[stable_idx]
+
+>>>>>>> 1440f33c6924972308e29748eec4d7b58c73bfb3
     if (!is.null(Anno.Int.PHRED.sub)) {
       Anno.Int.PHRED.sub <- Anno.Int.PHRED.sub[getGeno$include_index, , drop = FALSE]
       if (variant_type == "SNV" && ncol(Anno.Int.PHRED.sub) >= 2 && length(which(is.na(Anno.Int.PHRED.sub[,2]))) != 0) {

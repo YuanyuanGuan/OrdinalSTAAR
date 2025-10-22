@@ -127,10 +127,41 @@ missense <- function(gene_name, genofile, objNull, genes_info, variant_type = NU
         Anno.Int.PHRED.sub <- Anno.Int.PHRED.sub[include_index, , drop = FALSE]
       }
     }
+<<<<<<< HEAD
     
     if (is.null(dim(Geno)) || ncol(Geno) == 0) {
       message("Variants number of *missense* is less than 1, will skip this category...")
       result.missense <- list("OrdinalSTAAR_O" = NA)
+=======
+
+    if (is.null(dim(Geno)) || ncol(Geno) < rare_num_cutoff) {
+      message(paste0("After all filtering, variants number of *", sub_category_name, "* is less than ", rare_num_cutoff, ", skipping..."))
+      return(list("OrdinalSTAAR_O" = NA))
+    }
+
+    message(paste0("Performing pre-check for numerically unstable variants in *", sub_category_name, "*..."))
+    pre_check_stats <- Ordinal_exactScore(objNull = objNull, G_mat = Geno, use_SPA = FALSE)
+
+    unstable_idx <- which(pre_check_stats$result$Variance > instability_variance_cutoff)
+
+    if (length(unstable_idx) > 0) {
+      message(paste0("WARNING: Found and removed ", length(unstable_idx), " unstable variant(s) in *", sub_category_name, "*."))
+
+      stable_idx <- setdiff(1:ncol(Geno), unstable_idx)
+
+      Geno <- Geno[, stable_idx, drop = FALSE]
+      MAF <- MAF[stable_idx]
+      MAC <- MAC[stable_idx]
+
+      if (!is.null(Anno.Int.PHRED.sub)) {
+        Anno.Int.PHRED.sub <- Anno.Int.PHRED.sub[stable_idx, , drop = FALSE]
+      }
+
+      if (ncol(Geno) < rare_num_cutoff) {
+        message(paste0("After removing unstable variants from *", sub_category_name, "*, remaining number is less than ", rare_num_cutoff, ", skipping..."))
+        return(list("OrdinalSTAAR_O" = NA))
+      }
+>>>>>>> 1440f33c6924972308e29748eec4d7b58c73bfb3
     } else {
       result.missense <- try(
         OrdinalSTAAR(
@@ -145,9 +176,47 @@ missense <- function(gene_name, genofile, objNull, genes_info, variant_type = NU
       }
     }
   }
+<<<<<<< HEAD
   
   ## disruptive missense ######
   is.in <- (SNVlist) & (position >= sub_start_loc) & (position <= sub_end_loc)
+=======
+
+  # --- Part 1: Initial Variant Selection ---
+  phenotype.id = objNull$sample_ids
+  if(is.null(use_SPA)) use_SPA = objNull$use_SPA
+
+  seqResetFilter(genofile, verbose=FALSE)
+
+  filter <- seqGetData(genofile, QC_label)
+
+  if(variant_type=="variant")
+  {
+    SNVlist <- filter == "PASS"
+  }
+
+  if(variant_type=="SNV")
+  {
+    SNVlist <- (filter == "PASS") & isSNV(genofile)
+  }
+
+  if(variant_type=="Indel")
+  {
+    SNVlist <- (filter == "PASS") & (!isSNV(genofile))
+  }
+
+  position <- as.numeric(seqGetData(genofile, "position"))
+  variant.id <- seqGetData(genofile, "variant.id")
+  rm(filter); gc()
+
+  kk <- which(genes_info$hgnc_symbol==gene_name)
+  gene_info_kk = genes_info[kk, 1:2]
+
+  sub_start_loc <- genes_info[kk,3]
+  sub_end_loc <- genes_info[kk,4]
+
+  is.in <- (SNVlist) & (position>=sub_start_loc) & (position<=sub_end_loc)
+>>>>>>> 1440f33c6924972308e29748eec4d7b58c73bfb3
   variant.id.gene <- variant.id[is.in]
   
   seqSetFilter(genofile, variant.id = variant.id.gene, sample.id = phenotype.id)
