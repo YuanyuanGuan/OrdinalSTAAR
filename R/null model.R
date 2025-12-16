@@ -1,5 +1,46 @@
+#' Fit Null Model for Ordinal Traits using Proportional Odds Model
+#'
+#' This function fits a null model for ordinal traits in preparation for
+#' rare variant association testing using the STAAR framework. It uses the
+#' proportional odds model (via \code{\link[MASS]{polr}}) to estimate
+#' parameters and calculates the score residuals and covariance matrix
+#' required for downstream analysis.
+#'
+#' @param phenofile A character string specifying the path to the phenotype file
+#'   (csv, tab-delimited, etc.) or a data frame containing the phenotype and covariates.
+#' @param ordCol A character string specifying the column name of the ordinal phenotype.
+#' @param sampleCol A character string specifying the column name of the sample IDs.
+#' @param covCol A character vector specifying the column names of the covariates.
+#'   Default is \code{NULL}.
+#' @param offsetCol A character string specifying the column name of an offset variable
+#'   (if any). Default is \code{NULL}.
+#' @param use_SPA A logical indicating whether to prepare the object for Saddlepoint
+#'   Approximation (SPA) in downstream testing. Default is \code{FALSE}.
+#' @param range A numeric vector of length 2. Reserved for future SPA parameter usage.
+#'   Default is \code{c(-100, 100)}.
+#' @param length.out An integer. Reserved for future SPA parameter usage.
+#'   Default is \code{1e4}.
+#' @param verbose A logical indicating whether to print progress messages.
+#'   Default is \code{FALSE}.
+#'
+#' @return An object of class \code{staar_nullmodel}. This is a list containing:
+#' \item{scaled.residuals}{The score residuals adjusted for the covariance structure.}
+#' \item{Sigma_i}{The inverse of the variance-covariance matrix (diagonal matrix).}
+#' \item{covariance}{The covariance matrix of the model coefficients.}
+#' \item{coefficients}{The estimated coefficients from the proportional odds model.}
+#' \item{linear.predictors}{The linear predictors of the model.}
+#' \item{fitted.values}{Fitted values (on the latent scale).}
+#' \item{residuals}{Working residuals.}
+#' \item{id_include}{Vector of sample IDs included in the analysis.}
+#' \item{...}{Other internal parameters for STAAR functions.}
+#'
+#' @importFrom MASS polr
+#' @importFrom data.table fread
+#' @importFrom Matrix Diagonal
+#' @import stats
+#' @export
 Ordinal_NullModel <- function(phenofile, ordCol, sampleCol, covCol = NULL, offsetCol = NULL,
-                                   use_SPA = FALSE, range = c(-100, 100), length.out = 1e4, verbose = FALSE) {
+                              use_SPA = FALSE, range = c(-100, 100), length.out = 1e4, verbose = FALSE) {
 
   if(verbose) message("--- Step 1: Data Preparation ---")
 
@@ -171,6 +212,12 @@ Ordinal_NullModel <- function(phenofile, ordCol, sampleCol, covCol = NULL, offse
   return(obj)
 }
 
+#' Summary method for staar_nullmodel
+#'
+#' @param object An object of class \code{staar_nullmodel}.
+#' @param ... Additional arguments passed to summary.
+#' @return A summary list with dispersion parameter.
+#' @export
 summary.staar_nullmodel <- function(object, ...) {
   ans <- list(dispersion = 1)
   class(ans) <- "summary.staar_nullmodel"
