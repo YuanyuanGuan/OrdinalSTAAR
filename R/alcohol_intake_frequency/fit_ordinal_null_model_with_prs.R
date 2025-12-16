@@ -183,16 +183,13 @@ if(na_count > 0) {
 
 
 # Step 6: PCA -------------------------------------------------------------
-<<<<<<< HEAD:R/alcohol_intake_frequency/fit_ordinal_null_model_with_prs.R
 if (any(!is.finite(as.matrix(all_pred)))) {
   warning("Non-finite values found in PRS columns. Removing affected rows.")
   finite_rows <- rowSums(is.finite(as.matrix(all_pred))) == ncol(all_pred)
-=======
 all_probit_pred <- fullDat %>% select(all_of(all_probit_pred_cols))
 if (any(!is.finite(as.matrix(all_probit_pred)))) {
   warning("Infinite values found after probit transformation. Removing affected rows.")
   finite_rows <- rowSums(is.finite(as.matrix(all_probit_pred))) == ncol(all_probit_pred)
->>>>>>> 1440f33c6924972308e29748eec4d7b58c73bfb3:R/null model/fit_ordinal_null_model_with_prs.R
   fullDat <- fullDat[finite_rows, ]
   all_pred <- all_pred[finite_rows, ]
 }
@@ -219,7 +216,7 @@ prs_pc_cols <- paste0("prs_pc", 1:5)
 outcome_column <- "alcohol_intake_frequency"
 id_column <- "userId"
 
-obj.STAAR.UKB.alcohol_intake_frequency <- NullModel_Ordinal(
+obj.STAAR.UKB.alcohol_intake_frequency <- NullModel(
   phenofile = data_for_null_model,
   outcomeCol = outcome_column,
   sampleCol = id_column,
