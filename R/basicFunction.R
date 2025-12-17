@@ -1,39 +1,33 @@
 ### -------------------------------------------------------------------------
-### basicFunction.R  --  OrdinalSTAAR-adapted (structure preserved)
-### NOTE:
-### - Keep function order & commenting style identical to OrdinalSTAAR
-### - Only internal dependencies changed to use OrdinalSTAAR_NullModel fields
+### basicFunction.R  --  OrdinalSTAAR-adapted
 ### -------------------------------------------------------------------------
 
+#' @import Matrix
+#' @import stats
 exactScore = function(objNull = objNull, G_mat = G_mat, use_SPA = FALSE, SPA_filter = TRUE, SPA_filter_cutoff = 0.05, verbose = FALSE) {
   
-  ## ---- pull pieces from Ordinal NullModel (with fallback names) ----
-  X_mat <- if (!is.null(objNull$X_mat)) objNull$X_mat else if (!is.null(objNull$X)) objNull$X else stop("Null model missing X (X or X_mat)")
-  W_mat <- if (!is.null(objNull$Sigma_i)) objNull$Sigma_i else if (!is.null(objNull$s_vec)) Matrix::Diagonal(x = objNull$s_vec) else stop("Null model missing Sigma_i / s_vec")
-  XVX_inv <- if (!is.null(objNull$XXS_inv)) objNull$XXS_inv else if (!is.null(objNull$cov)) objNull$cov else stop("Null model missing XXS_inv / cov")
-  res_null <- if (!is.null(objNull$scaled.residuals)) objNull$scaled.residuals else if (!is.null(objNull$r_sum)) objNull$r_sum else stop("Null model missing scaled.residuals / r_sum")
+  ## ---- pull pieces from Ordinal NullModel ----
+  X_mat <- if (!is.null(objNull$X_mat)) objNull$X_mat else if (!is.null(objNull$X)) objNull$X else stop("Null model missing X")
+  W_mat <- if (!is.null(objNull$Sigma_i)) objNull$Sigma_i else if (!is.null(objNull$s_vec)) Matrix::Diagonal(x = objNull$s_vec) else stop("Null model missing Sigma_i")
+  XVX_inv <- if (!is.null(objNull$XXS_inv)) objNull$XXS_inv else if (!is.null(objNull$cov)) objNull$cov else stop("Null model missing cov")
+  res_null <- if (!is.null(objNull$scaled.residuals)) objNull$scaled.residuals else if (!is.null(objNull$r_sum)) objNull$r_sum else stop("Null model missing residuals")
   
-  ## keep same variable names as OrdinalSTAAR for downstream
+  ## keep same variable names
   t_X_mat <- if (!is.null(objNull$t_X_mat)) objNull$t_X_mat else cbind(1, X_mat)
-  X_XXinv <- if (!is.null(objNull$X_XXinv)) objNull$X_XXinv else {
-    XtX <- crossprod(t_X_mat, t_X_mat)
-    t_X_mat %*% solve(XtX)
-  }
   
   if (inherits(G_mat, "sparseMatrix")) G_mat <- suppressWarnings(as(G_mat, "matrix"))
   
-  ## ---- variance parts under fixed-effects (POLMM-style) ----
-  ## Var(U) = G' W G - G' W X (X' W X)^{-1} X' W G
+  ## ---- variance parts (Fixed Effects) ----
   WG_mat  <- W_mat %*% G_mat
-  GWG_mat <- crossprod(WG_mat, G_mat)                # G' W G
-  GWX_mat <- crossprod(WG_mat, X_mat)                # G' W X
+  GWG_mat <- crossprod(WG_mat, G_mat)
+  GWX_mat <- crossprod(WG_mat, X_mat)
   Var_mat <- GWG_mat - GWX_mat %*% XVX_inv %*% t(GWX_mat)
   
   ## ---- score ----
   Score <- as.vector(crossprod(res_null, G_mat))
   Variance <- pmax(diag(Var_mat), 1e-12)
   Stest <- as.vector(Score^2 / Variance)
-  p_value <- as.vector(pchisq(Stest, df = 1, lower.tail = FALSE))
+  p_value <- as.vector(stats::pchisq(Stest, df = 1, lower.tail = FALSE))
   
   result <- data.frame("Score" = Score, "Variance" = Variance, "Stest" = Stest, "Pvalue" = p_value)
   
@@ -49,20 +43,21 @@ exactScore = function(objNull = objNull, G_mat = G_mat, use_SPA = FALSE, SPA_fil
     result$Pvalue_SPA <- result$Pvalue
     
     if (length(SPA_index) > 0) {
-      
       if (verbose) print(paste0("Single variants analysis: apply SPA adjustment to ", length(SPA_index), " markers"))
       
       G_SPA <- G_mat[, SPA_index, drop = FALSE]
       G_SPA_Score <- Score[SPA_index]
       G_SPA_Var <- Variance[SPA_index]
       
-      ## residualize by intercept+X (weighted projection)
+      ## [重要] 计算投影后的基因型 G_tilde，用于 SPA 中校正协变量影响
       G_tilde <- G_tilde_forSPA(G_SPA, objNull = objNull)
       
       for (i in seq_along(SPA_index)) {
         G_i <- G_tilde[, i]
         G_i_Score <- G_SPA_Score[i]
         G_i_Var <- G_SPA_Var[i]
+        
+        # 调用 single_SPA
         pval_i <- single_SPA(G_i, G_i_Score, G_i_Var, objNull)
         result$Pvalue_SPA[SPA_index[i]] <- pval_i
       }
@@ -77,18 +72,15 @@ exactScore = function(objNull = objNull, G_mat = G_mat, use_SPA = FALSE, SPA_fil
   Est_se <- 1 / Uscore_se
   
   if (use_SPA) {
-    pvalue_log10 <- -log10(result$Pvalue_SPA)
-    result$pvalue_log10 <- pvalue_log10
+    result$pvalue_log10 <- -log10(result$Pvalue_SPA)
     result <- result[, c(4:6, 1:3)]
-    result$Est <- Est
-    result$Est_se <- Est_se
   } else {
-    pvalue_log10 <- -log10(result$Pvalue)
-    result$pvalue_log10 <- pvalue_log10
+    result$pvalue_log10 <- -log10(result$Pvalue)
     result <- result[, c(3:5, 1:3)]
-    result$Est <- Est
-    result$Est_se <- Est_se
   }
+  
+  result$Est <- Est
+  result$Est_se <- Est_se
   
   result <- list("result" = result, "Score" = Score, "Covariance" = Var_mat)
   return(result)
@@ -103,14 +95,15 @@ G_tilde_forSPA = function(G, objNull) {
   
   if (inherits(G, "sparseMatrix")) {G <- suppressWarnings(as(G, "matrix"))}
   
-  ## Weighted projection: H_W = X (X' W X)^{-1} X' W
-  W <- objNull$Sigma_i                 # diagonal / symmetric
+  W <- objNull$Sigma_i
   X <- t_X_mat
   XWX  <- crossprod(X, W %*% X)
-  if (rcond(XWX) < 1e-10) diag(XWX) <- diag(XWX) + 1e-8  # ridge for stability
+  if (rcond(XWX) < 1e-10) diag(XWX) <- diag(XWX) + 1e-8
   XWXinv <- solve(XWX)
+  
+  # H = X (X' W X)^-1 X' W
+  # G_tilde = (I - H) G
   G_tilde <- G - X %*% (XWXinv %*% (crossprod(X, W %*% G)))
-  ## Equivalent: (I - H_W) %*% G
   
   return(G_tilde = G_tilde)
 }
@@ -127,7 +120,6 @@ genoMatrixPlink = function(Geno, bim_data = bim_data, markerIndex,
   G_summary = list()
   G_na = list()
   
-  ## calculate MAF MAC missing and flip
   for (p in 1:Geno_col) {
     Geno_p = Geno[, p]
     MAF = mean(Geno_p, na.rm = T)/2
@@ -145,7 +137,6 @@ genoMatrixPlink = function(Geno, bim_data = bim_data, markerIndex,
   
   G_summary = data.table::rbindlist(G_summary)
   
-  ## variants filter
   if (is.null(min_mac_cutoff)) {
     include_index = which(G_summary$missing_rate <= geno_missing_cutoff & G_summary$MAF >= min_maf_cutoff)
   } else {
@@ -161,7 +152,6 @@ genoMatrixPlink = function(Geno, bim_data = bim_data, markerIndex,
   G_summary = G_summary[include_index, ]
   G_na = G_na[include_index]
   
-  ## imputation
   switch (geno_missing_imputation,
           "mean" = {
             for (p in 1:length(include_index)) {
@@ -180,8 +170,6 @@ genoMatrixPlink = function(Geno, bim_data = bim_data, markerIndex,
   
   G_summary = cbind(bim_data[markerIndex[include_index], c(1,4:6,2)], G_summary)
   colnames(G_summary)[1:5] = c("CHR", "POS", "REF1", "REF2", "rsID")
-  
-  ## update imputed MAC
   G_summary$MAC = colSums(Geno)
   
   result = list(Geno = Geno, G_summary = G_summary)
@@ -197,11 +185,9 @@ genoMatrixGDS = function(Geno, G_info, geno_missing_cutoff = 1, geno_missing_imp
   G_summary = list()
   G_na = list()
   
-  ## calculate MAF MAC missing and flip
   for (p in 1:Geno_col) {
     Geno_p = Geno[, p]
     AF = mean(Geno_p, na.rm = T)/2
-    ALT_AF = 1-AF
     MAF = AF
     if (MAF > 0.5) {
       MAF = 1-MAF
@@ -218,7 +204,6 @@ genoMatrixGDS = function(Geno, G_info, geno_missing_cutoff = 1, geno_missing_imp
   G_summary = data.table::rbindlist(G_summary)
   G_summary = cbind(G_info, G_summary)
   
-  ## variants filter
   if (is.null(min_mac_cutoff)) {
     include_index = which(G_summary$missing_rate <= geno_missing_cutoff & G_summary$MAF >= min_maf_cutoff)
   } else {
@@ -234,7 +219,6 @@ genoMatrixGDS = function(Geno, G_info, geno_missing_cutoff = 1, geno_missing_imp
   G_summary = G_summary[include_index, ]
   G_na = G_na[include_index]
   
-  ## imputation
   switch (geno_missing_imputation,
           "mean" = {
             for (p in 1:length(include_index)) {
@@ -251,9 +235,7 @@ genoMatrixGDS = function(Geno, G_info, geno_missing_cutoff = 1, geno_missing_imp
           }
   )
   
-  ## update imputed MAC
   G_summary$MAC = colSums(Geno)
-  
   result = list(Geno = Geno, G_summary = G_summary, include_index = include_index)
   return(result)
 }
@@ -268,7 +250,6 @@ genoFlipRV = function(Geno, geno_missing_imputation = c("mean", "minor"),
   G_summary = list()
   G_na = list()
   
-  ## calculate MAF, MAC, missing, and flip
   for (p in 1:Geno_col) {
     Geno_p = Geno[, p]
     MAF = mean(Geno_p, na.rm = T)/2
@@ -285,18 +266,15 @@ genoFlipRV = function(Geno, geno_missing_imputation = c("mean", "minor"),
   }
   G_summary = data.table::rbindlist(G_summary)
   
-  ## variants filter
   include_index = which(G_summary$missing_rate <= geno_missing_cutoff & G_summary$MAF >= min_maf_cutoff & G_summary$MAF <= rare_maf_cutoff)
   Geno = Geno[, include_index, drop = FALSE]
   G_summary = G_summary[include_index, ]
   G_na = G_na[include_index]
   
-  ## check for rare variants number
   if(length(include_index) < rare_num_cutoff) {
     stop('Number of variants in this gene is less than ', rare_num_cutoff, ", will skip this category...", call. = FALSE)
   }
   
-  ## imputation
   switch (geno_missing_imputation,
           "mean" = {
             for (p in 1:length(include_index)) {
@@ -312,10 +290,7 @@ genoFlipRV = function(Geno, geno_missing_imputation = c("mean", "minor"),
             }
           }
   )
-  
-  ## update imputed MAC
   G_summary$MAC = colSums(Geno)
-  
   result = list(Geno = Geno, G_summary = G_summary, include_index = include_index)
   return(result)
 }
@@ -328,7 +303,6 @@ genoFlip = function(Geno) {
   G_summary = list()
   G_na = list()
   
-  ## calculate MAF MAC missing and flip
   for (p in 1:Geno_col) {
     Geno_p = Geno[, p]
     MAF = mean(Geno_p, na.rm = T)/2
@@ -344,15 +318,11 @@ genoFlip = function(Geno) {
   }
   G_summary = data.table::rbindlist(G_summary)
   
-  ## imputation  minor
   for (p in 1:ncol(Geno)) {
     na_index = G_na[[p]]
     Geno[na_index, p] = 0
   }
-  
-  ## update imputed MAC
   G_summary$MAC = colSums(Geno)
-  
   result = list(Geno = Geno, G_summary = G_summary)
   return(result)
 }
@@ -393,7 +363,7 @@ argsReshape = function(default_args, args, num_args, log_args) {
 
 
 single_SPA = function(G, Score, Variance, objNull) {
-  ## 使用 NullModel 附带的经验 CGF（由 r_i 构建）
+  # 注意：这里我们使用 objNull 中已计算好的 K_org_emp 等函数
   Stest = Score / sqrt(Variance)
   
   if (inherits(G, "sparseMatrix")) G <- suppressWarnings(as(G, "matrix"))
@@ -412,53 +382,11 @@ single_SPA = function(G, Score, Variance, objNull) {
 }
 
 
-### --- SPA (empirical CGF from per-subject efficient scores r_i) ---
+# [修改] 删除了 redundant 的 CGF4Res 函数，因为 null model.R 中已经有了 Compute_Empirical_CGF
 
-CGF4Res <- function(objNull,
-                    range = c(-100, 100),
-                    length.out = 1e4,
-                    verbose = TRUE) {
-  r <- if (!is.null(objNull$r_sum)) {
-    as.numeric(objNull$r_sum)
-  } else if (!is.null(objNull$scaled.residuals)) {
-    as.numeric(objNull$scaled.residuals)
-  } else {
-    stop("objNull must contain r_sum or scaled.residuals for SPA CGF.")
-  }
-  r <- r[is.finite(r)]
-  if (length(r) == 0L) stop("No finite residuals to build empirical CGF.")
-  
-  ## Center so that K'(0)=0
-  r <- r - mean(r)
-  
-  idx0   <- qcauchy(seq_len(length.out) / (length.out + 1))
-  t_grid <- idx0 * max(range) / max(idx0)
-  
-  if (verbose) message("Preparing empirical CGF on ", length(t_grid), " nodes ...")
-  
-  Ktab <- vapply(t_grid, function(t) {
-    tr <- t * r
-    s  <- max(tr)
-    z  <- exp(tr - s)
-    m0 <- mean(z)
-    m1 <- mean(r * z)
-    m2 <- mean(r^2 * z)
-    
-    K0 <- s + log(m0)
-    K1 <- m1 / m0
-    K2 <- (m0 * m2 - m1^2) / m0^2
-    c(K0, K1, K2)
-  }, numeric(3))
-  
-  objNull$K_org_emp <- approxfun(t_grid, Ktab[1, ], rule = 2)
-  objNull$K_1_emp   <- approxfun(t_grid, Ktab[2, ], rule = 2)
-  objNull$K_2_emp   <- approxfun(t_grid, Ktab[3, ], rule = 2)
-  objNull$use_SPA <- TRUE
-  return(objNull)
-}
 
 GetProb_SPA = function(objNull = objNull, G2N1 = G2N1, G2N0 = G2N0, N1set = N1set, N0 = N0, ztest = ztest, lower.tail) {
-  out = uniroot(K1_adj, c(-20,20), extendInt = "upX",
+  out = stats::uniroot(K1_adj, c(-20,20), extendInt = "upX",
                 G2N1=G2N1, G2N0=G2N0, N1set=N1set, N0=N0, ztest=ztest, objNull=objNull)
   zeta = out$root
   
@@ -470,7 +398,7 @@ GetProb_SPA = function(objNull = objNull, G2N1 = G2N1, G2N0 = G2N0, N1set = N1se
   w = sign(zeta) * (2 * temp1)^{1/2}
   v = zeta * (k2)^{1/2}
   
-  pval = pnorm(w + 1/w * log(v/w), lower.tail = lower.tail)
+  pval = stats::pnorm(w + 1/w * log(v/w), lower.tail = lower.tail)
   return(pval)
 }
 
@@ -481,6 +409,7 @@ K_org = function(t, G2N1, G2N0, N1set, N0, objNull) {
     t1 = t[i]
     t2N0 = t1*G2N0
     t2N1 = t1*G2N1
+    # 依赖 objNull 中的经验函数
     out[i] = N0*objNull$K_org_emp(t2N0) + sum(objNull$K_org_emp(t2N1))
   }
   return(out)
@@ -543,7 +472,7 @@ CCT <- function(pvals, weights=NULL){
   if(cct.stat > 1e+15){
     pval <- (1/cct.stat)/pi
   }else{
-    pval <- 1-pcauchy(cct.stat)
+    pval <- 1-stats::pcauchy(cct.stat)
   }
   return(pval)
 }
@@ -567,7 +496,7 @@ Burden = function(Geno, Score, Covariance, weight, objNull, use_SPA = NULL, SPA_
     Variance_k = as.vector(weight_k %*% Covariance %*% weight_k)
     
     Stest_k = Score_k^2 / Variance_k
-    pval_k = pchisq(Stest_k, df = 1, lower.tail = FALSE)
+    pval_k = stats::pchisq(Stest_k, df = 1, lower.tail = FALSE)
     
     if (use_SPA && (!SPA_filter || (SPA_filter && pval_k < SPA_filter_cutoff))) {
       G_w_k = G_tilde_w[,k,drop = F]
@@ -650,6 +579,7 @@ SKAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_S, weight_B,
   ultra_rare_index = which(MAC <= ultra_rare_mac_cutoff)
   
   if (use_SPA) {
+    # 如果开启 SPA，采用 Adjusted P 值反推 Z 分数，再进行 SKAT
     
     if (combine_ultra_rare & length(ultra_rare_index) > 1) {
       if (verbose) print(paste0("             Combine ", length(ultra_rare_index), " ultra rare variants in SKAT test"))
@@ -690,7 +620,7 @@ SKAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_S, weight_B,
           Covariance_wk[2:ncol(Geno_new_wk), 2:ncol(Geno_new_wk)] = Covariance_sub
           
           Pvalue_wk = c(pval_B_rare[k], Pvalue_sub)
-          z_tilde = qnorm(Pvalue_wk/2, mean = 0, sd = 1, lower.tail = F, log.p = F)
+          z_tilde = stats::qnorm(Pvalue_wk/2, mean = 0, sd = 1, lower.tail = F, log.p = F)
           weight_k = weight_S_new[, k]
           Qtest = sum(z_tilde^2 * weight_k^2 * diag(Covariance_wk))
           
@@ -709,7 +639,7 @@ SKAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_S, weight_B,
       }
       
     } else {
-      z_tilde = qnorm(Pvalue/2, mean = 0, sd = 1, lower.tail = F, log.p = F)
+      z_tilde = stats::qnorm(Pvalue/2, mean = 0, sd = 1, lower.tail = F, log.p = F)
       for (k in 1:ncol(weight_S)) {
         weight_k = weight_S[, k]
         Qtest = sum(z_tilde^2 * weight_k^2 * diag(Covariance))
