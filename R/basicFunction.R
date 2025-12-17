@@ -1,39 +1,35 @@
-### -------------------------------------------------------------------------
-### basicFunction.R  --  OrdinalSTAAR-adapted (structure preserved)
-### NOTE:
-### - Keep function order & commenting style identical to OrdinalSTAAR
-### - Only internal dependencies changed to use OrdinalSTAAR_NullModel fields
-### -------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
-exactScore = function(objNull = objNull, G_mat = G_mat, use_SPA = FALSE, SPA_filter = TRUE, SPA_filter_cutoff = 0.05, verbose = FALSE) {
+#' @import Matrix
+#' @import stats
+#' @export
+exactScore = function(objNull, G_mat, use_SPA = FALSE, SPA_filter = TRUE, SPA_filter_cutoff = 0.05, verbose = FALSE) {
   
-  ## ---- pull pieces from Ordinal NullModel (with fallback names) ----
-  X_mat <- if (!is.null(objNull$X_mat)) objNull$X_mat else if (!is.null(objNull$X)) objNull$X else stop("Null model missing X (X or X_mat)")
-  W_mat <- if (!is.null(objNull$Sigma_i)) objNull$Sigma_i else if (!is.null(objNull$s_vec)) Matrix::Diagonal(x = objNull$s_vec) else stop("Null model missing Sigma_i / s_vec")
-  XVX_inv <- if (!is.null(objNull$XXS_inv)) objNull$XXS_inv else if (!is.null(objNull$cov)) objNull$cov else stop("Null model missing XXS_inv / cov")
-  res_null <- if (!is.null(objNull$scaled.residuals)) objNull$scaled.residuals else if (!is.null(objNull$r_sum)) objNull$r_sum else stop("Null model missing scaled.residuals / r_sum")
+  ## ---- pull pieces from Ordinal NullModel ----
+  # Using standard names from Ordinal_NullModel output
+  X_mat <- objNull$X
+  W_mat <- objNull$Sigma_i
+  XtWX_inv <- objNull$cov
+  res_null <- objNull$scaled.residuals
   
-  ## keep same variable names as OrdinalSTAAR for downstream
-  t_X_mat <- if (!is.null(objNull$t_X_mat)) objNull$t_X_mat else cbind(1, X_mat)
-  X_XXinv <- if (!is.null(objNull$X_XXinv)) objNull$X_XXinv else {
-    XtX <- crossprod(t_X_mat, t_X_mat)
-    t_X_mat %*% solve(XtX)
+  if (is.null(X_mat) || is.null(W_mat) || is.null(XtWX_inv) || is.null(res_null)) {
+    stop("Null model object is missing required components (X, Sigma_i, cov, scaled.residuals).")
   }
   
   if (inherits(G_mat, "sparseMatrix")) G_mat <- suppressWarnings(as(G_mat, "matrix"))
   
-  ## ---- variance parts under fixed-effects (POLMM-style) ----
-  ## Var(U) = G' W G - G' W X (X' W X)^{-1} X' W G
+  ## ---- variance parts (Fixed Effects) ----
+  # Var(S) = G'WG - G'WX (X'WX)^-1 X'WG
   WG_mat  <- W_mat %*% G_mat
-  GWG_mat <- crossprod(WG_mat, G_mat)                # G' W G
-  GWX_mat <- crossprod(WG_mat, X_mat)                # G' W X
-  Var_mat <- GWG_mat - GWX_mat %*% XVX_inv %*% t(GWX_mat)
+  GWG_mat <- crossprod(WG_mat, G_mat)
+  GWX_mat <- crossprod(WG_mat, X_mat)
+  Var_mat <- GWG_mat - GWX_mat %*% XtWX_inv %*% t(GWX_mat)
   
   ## ---- score ----
   Score <- as.vector(crossprod(res_null, G_mat))
   Variance <- pmax(diag(Var_mat), 1e-12)
   Stest <- as.vector(Score^2 / Variance)
-  p_value <- as.vector(pchisq(Stest, df = 1, lower.tail = FALSE))
+  p_value <- as.vector(stats::pchisq(Stest, df = 1, lower.tail = FALSE))
   
   result <- data.frame("Score" = Score, "Variance" = Variance, "Stest" = Stest, "Pvalue" = p_value)
   
@@ -49,26 +45,25 @@ exactScore = function(objNull = objNull, G_mat = G_mat, use_SPA = FALSE, SPA_fil
     result$Pvalue_SPA <- result$Pvalue
     
     if (length(SPA_index) > 0) {
-      
-      if (verbose) print(paste0("Single variants analysis: apply SPA adjustment to ", length(SPA_index), " markers"))
+      if (verbose) message(paste0("Single variants analysis: apply SPA adjustment to ", length(SPA_index), " markers"))
       
       G_SPA <- G_mat[, SPA_index, drop = FALSE]
       G_SPA_Score <- Score[SPA_index]
       G_SPA_Var <- Variance[SPA_index]
       
-      ## residualize by intercept+X (weighted projection)
       G_tilde <- G_tilde_forSPA(G_SPA, objNull = objNull)
       
       for (i in seq_along(SPA_index)) {
         G_i <- G_tilde[, i]
         G_i_Score <- G_SPA_Score[i]
         G_i_Var <- G_SPA_Var[i]
+        
         pval_i <- single_SPA(G_i, G_i_Score, G_i_Var, objNull)
         result$Pvalue_SPA[SPA_index[i]] <- pval_i
       }
       
     } else {
-      if (verbose) print(paste0("Under SPA filter, no markers' p-value is smaller than ", SPA_filter_cutoff))
+      if (verbose) message(paste0("Under SPA filter, no markers' p-value is smaller than ", SPA_filter_cutoff))
     }
   }
   
@@ -77,18 +72,15 @@ exactScore = function(objNull = objNull, G_mat = G_mat, use_SPA = FALSE, SPA_fil
   Est_se <- 1 / Uscore_se
   
   if (use_SPA) {
-    pvalue_log10 <- -log10(result$Pvalue_SPA)
-    result$pvalue_log10 <- pvalue_log10
+    result$pvalue_log10 <- -log10(result$Pvalue_SPA)
     result <- result[, c(4:6, 1:3)]
-    result$Est <- Est
-    result$Est_se <- Est_se
   } else {
-    pvalue_log10 <- -log10(result$Pvalue)
-    result$pvalue_log10 <- pvalue_log10
+    result$pvalue_log10 <- -log10(result$Pvalue)
     result <- result[, c(3:5, 1:3)]
-    result$Est <- Est
-    result$Est_se <- Est_se
   }
+  
+  result$Est <- Est
+  result$Est_se <- Est_se
   
   result <- list("result" = result, "Score" = Score, "Covariance" = Var_mat)
   return(result)
@@ -96,27 +88,30 @@ exactScore = function(objNull = objNull, G_mat = G_mat, use_SPA = FALSE, SPA_fil
 
 
 G_tilde_forSPA = function(G, objNull) {
-  t_X_mat <- if (!is.null(objNull$t_X_mat)) objNull$t_X_mat else {
-    X_mat <- if (!is.null(objNull$X_mat)) objNull$X_mat else objNull$X
-    cbind(1, X_mat)
-  }
+  X <- objNull$X
   
   if (inherits(G, "sparseMatrix")) {G <- suppressWarnings(as(G, "matrix"))}
   
-  ## Weighted projection: H_W = X (X' W X)^{-1} X' W
-  W <- objNull$Sigma_i                 # diagonal / symmetric
-  X <- t_X_mat
-  XWX  <- crossprod(X, W %*% X)
-  if (rcond(XWX) < 1e-10) diag(XWX) <- diag(XWX) + 1e-8  # ridge for stability
-  XWXinv <- solve(XWX)
-  G_tilde <- G - X %*% (XWXinv %*% (crossprod(X, W %*% G)))
-  ## Equivalent: (I - H_W) %*% G
+  # H = X (X' W X)^-1 X' W
+  # G_tilde = (I - H) G = G - X %*% ( (X'WX)^-1 X'W ) %*% G
+  
+  if (!is.null(objNull$XXSigma_iX_inv)) {
+    term <- crossprod(objNull$XXSigma_iX_inv, G)
+    G_tilde <- G - X %*% term
+  } else {
+    W <- objNull$Sigma_i
+    XWX  <- crossprod(X, W %*% X)
+    if (rcond(XWX) < 1e-10) diag(XWX) <- diag(XWX) + 1e-8
+    XWXinv <- solve(XWX)
+    G_tilde <- G - X %*% (XWXinv %*% (crossprod(X, W %*% G)))
+  }
   
   return(G_tilde = G_tilde)
 }
 
 
-genoMatrixPlink = function(Geno, bim_data = bim_data, markerIndex,
+#' @export
+genoMatrixPlink = function(Geno, bim_data, markerIndex,
                            geno_missing_cutoff = 1, geno_missing_imputation = c("mean", "minor"),
                            min_mac_cutoff = NULL, min_maf_cutoff = 0.01) {
   Geno[Geno == -9 | Geno == 9] = NA
@@ -127,7 +122,6 @@ genoMatrixPlink = function(Geno, bim_data = bim_data, markerIndex,
   G_summary = list()
   G_na = list()
   
-  ## calculate MAF MAC missing and flip
   for (p in 1:Geno_col) {
     Geno_p = Geno[, p]
     MAF = mean(Geno_p, na.rm = T)/2
@@ -145,7 +139,6 @@ genoMatrixPlink = function(Geno, bim_data = bim_data, markerIndex,
   
   G_summary = data.table::rbindlist(G_summary)
   
-  ## variants filter
   if (is.null(min_mac_cutoff)) {
     include_index = which(G_summary$missing_rate <= geno_missing_cutoff & G_summary$MAF >= min_maf_cutoff)
   } else {
@@ -161,34 +154,36 @@ genoMatrixPlink = function(Geno, bim_data = bim_data, markerIndex,
   G_summary = G_summary[include_index, ]
   G_na = G_na[include_index]
   
-  ## imputation
+  geno_missing_imputation <- match.arg(geno_missing_imputation)
   switch (geno_missing_imputation,
           "mean" = {
             for (p in 1:length(include_index)) {
               na_index = G_na[[p]]
-              imput_p = G_summary$MAF[p]*2
-              Geno[na_index, p] = imput_p
+              if(length(na_index) > 0){
+                imput_p = G_summary$MAF[p]*2
+                Geno[na_index, p] = imput_p
+              }
             }
           },
           "minor" = {
             for (p in 1:length(include_index)) {
               na_index = G_na[[p]]
-              Geno[na_index, p] = 0
+              if(length(na_index) > 0){
+                Geno[na_index, p] = 0
+              }
             }
           }
   )
   
   G_summary = cbind(bim_data[markerIndex[include_index], c(1,4:6,2)], G_summary)
   colnames(G_summary)[1:5] = c("CHR", "POS", "REF1", "REF2", "rsID")
-  
-  ## update imputed MAC
   G_summary$MAC = colSums(Geno)
   
   result = list(Geno = Geno, G_summary = G_summary)
   return(result)
 }
 
-
+#' @export
 genoMatrixGDS = function(Geno, G_info, geno_missing_cutoff = 1, geno_missing_imputation = c("mean", "minor"),
                          min_mac_cutoff = NULL, min_maf_cutoff = 0.01) {
   Geno_col = ncol(Geno)
@@ -197,11 +192,9 @@ genoMatrixGDS = function(Geno, G_info, geno_missing_cutoff = 1, geno_missing_imp
   G_summary = list()
   G_na = list()
   
-  ## calculate MAF MAC missing and flip
   for (p in 1:Geno_col) {
     Geno_p = Geno[, p]
     AF = mean(Geno_p, na.rm = T)/2
-    ALT_AF = 1-AF
     MAF = AF
     if (MAF > 0.5) {
       MAF = 1-MAF
@@ -218,7 +211,6 @@ genoMatrixGDS = function(Geno, G_info, geno_missing_cutoff = 1, geno_missing_imp
   G_summary = data.table::rbindlist(G_summary)
   G_summary = cbind(G_info, G_summary)
   
-  ## variants filter
   if (is.null(min_mac_cutoff)) {
     include_index = which(G_summary$missing_rate <= geno_missing_cutoff & G_summary$MAF >= min_maf_cutoff)
   } else {
@@ -234,31 +226,33 @@ genoMatrixGDS = function(Geno, G_info, geno_missing_cutoff = 1, geno_missing_imp
   G_summary = G_summary[include_index, ]
   G_na = G_na[include_index]
   
-  ## imputation
+  geno_missing_imputation <- match.arg(geno_missing_imputation)
   switch (geno_missing_imputation,
           "mean" = {
             for (p in 1:length(include_index)) {
               na_index = G_na[[p]]
-              imput_p = G_summary$MAF[p]*2
-              Geno[na_index, p] = imput_p
+              if(length(na_index) > 0){
+                imput_p = G_summary$MAF[p]*2
+                Geno[na_index, p] = imput_p
+              }
             }
           },
           "minor" = {
             for (p in 1:length(include_index)) {
               na_index = G_na[[p]]
-              Geno[na_index, p] = 0
+              if(length(na_index) > 0){
+                Geno[na_index, p] = 0
+              }
             }
           }
   )
   
-  ## update imputed MAC
   G_summary$MAC = colSums(Geno)
-  
   result = list(Geno = Geno, G_summary = G_summary, include_index = include_index)
   return(result)
 }
 
-
+#' @export
 genoFlipRV = function(Geno, geno_missing_imputation = c("mean", "minor"),
                       geno_missing_cutoff = 0.1, min_maf_cutoff = 1e-4, rare_maf_cutoff = 0.01, rare_num_cutoff = 2) {
   
@@ -268,7 +262,6 @@ genoFlipRV = function(Geno, geno_missing_imputation = c("mean", "minor"),
   G_summary = list()
   G_na = list()
   
-  ## calculate MAF, MAC, missing, and flip
   for (p in 1:Geno_col) {
     Geno_p = Geno[, p]
     MAF = mean(Geno_p, na.rm = T)/2
@@ -285,50 +278,47 @@ genoFlipRV = function(Geno, geno_missing_imputation = c("mean", "minor"),
   }
   G_summary = data.table::rbindlist(G_summary)
   
-  ## variants filter
   include_index = which(G_summary$missing_rate <= geno_missing_cutoff & G_summary$MAF >= min_maf_cutoff & G_summary$MAF <= rare_maf_cutoff)
   Geno = Geno[, include_index, drop = FALSE]
   G_summary = G_summary[include_index, ]
   G_na = G_na[include_index]
   
-  ## check for rare variants number
   if(length(include_index) < rare_num_cutoff) {
     stop('Number of variants in this gene is less than ', rare_num_cutoff, ", will skip this category...", call. = FALSE)
   }
   
-  ## imputation
+  geno_missing_imputation <- match.arg(geno_missing_imputation)
   switch (geno_missing_imputation,
           "mean" = {
             for (p in 1:length(include_index)) {
               na_index = G_na[[p]]
-              imput_p = G_summary$MAF[p]*2
-              Geno[na_index, p] = imput_p
+              if(length(na_index) > 0){
+                imput_p = G_summary$MAF[p]*2
+                Geno[na_index, p] = imput_p
+              }
             }
           },
           "minor" = {
             for (p in 1:length(include_index)) {
               na_index = G_na[[p]]
-              Geno[na_index, p] = 0
+              if(length(na_index) > 0){
+                Geno[na_index, p] = 0
+              }
             }
           }
   )
-  
-  ## update imputed MAC
   G_summary$MAC = colSums(Geno)
-  
   result = list(Geno = Geno, G_summary = G_summary, include_index = include_index)
   return(result)
 }
 
-
+#' @export
 genoFlip = function(Geno) {
   Geno_col = ncol(Geno)
-  Geno_row = nrow(Geno)
   
   G_summary = list()
   G_na = list()
   
-  ## calculate MAF MAC missing and flip
   for (p in 1:Geno_col) {
     Geno_p = Geno[, p]
     MAF = mean(Geno_p, na.rm = T)/2
@@ -344,26 +334,22 @@ genoFlip = function(Geno) {
   }
   G_summary = data.table::rbindlist(G_summary)
   
-  ## imputation  minor
   for (p in 1:ncol(Geno)) {
     na_index = G_na[[p]]
-    Geno[na_index, p] = 0
+    if(length(na_index) > 0){
+      Geno[na_index, p] = 0
+    }
   }
-  
-  ## update imputed MAC
   G_summary$MAC = colSums(Geno)
-  
   result = list(Geno = Geno, G_summary = G_summary)
   return(result)
 }
-
 
 #' @export
 rap_load_as = function(file, name) {
   data_list <- load(file)
   assign(name, get(data_list[1]), envir = .GlobalEnv)
 }
-
 
 #' @export
 argsReshape = function(default_args, args, num_args, log_args) {
@@ -391,12 +377,12 @@ argsReshape = function(default_args, args, num_args, log_args) {
   return(args_list)
 }
 
-
 single_SPA = function(G, Score, Variance, objNull) {
-  ## 使用 NullModel 附带的经验 CGF（由 r_i 构建）
   Stest = Score / sqrt(Variance)
   
-  if (inherits(G, "sparseMatrix")) G <- suppressWarnings(as(G, "matrix"))
+  # Coerce to vector to prevent S4 class errors in SPA functions
+  G <- as.vector(G)
+  
   G_norm = G / sqrt(Variance)
   
   N = length(G_norm)
@@ -411,55 +397,9 @@ single_SPA = function(G, Score, Variance, objNull) {
   return(pval)
 }
 
-
-### --- SPA (empirical CGF from per-subject efficient scores r_i) ---
-
-CGF4Res <- function(objNull,
-                    range = c(-100, 100),
-                    length.out = 1e4,
-                    verbose = TRUE) {
-  r <- if (!is.null(objNull$r_sum)) {
-    as.numeric(objNull$r_sum)
-  } else if (!is.null(objNull$scaled.residuals)) {
-    as.numeric(objNull$scaled.residuals)
-  } else {
-    stop("objNull must contain r_sum or scaled.residuals for SPA CGF.")
-  }
-  r <- r[is.finite(r)]
-  if (length(r) == 0L) stop("No finite residuals to build empirical CGF.")
-  
-  ## Center so that K'(0)=0
-  r <- r - mean(r)
-  
-  idx0   <- qcauchy(seq_len(length.out) / (length.out + 1))
-  t_grid <- idx0 * max(range) / max(idx0)
-  
-  if (verbose) message("Preparing empirical CGF on ", length(t_grid), " nodes ...")
-  
-  Ktab <- vapply(t_grid, function(t) {
-    tr <- t * r
-    s  <- max(tr)
-    z  <- exp(tr - s)
-    m0 <- mean(z)
-    m1 <- mean(r * z)
-    m2 <- mean(r^2 * z)
-    
-    K0 <- s + log(m0)
-    K1 <- m1 / m0
-    K2 <- (m0 * m2 - m1^2) / m0^2
-    c(K0, K1, K2)
-  }, numeric(3))
-  
-  objNull$K_org_emp <- approxfun(t_grid, Ktab[1, ], rule = 2)
-  objNull$K_1_emp   <- approxfun(t_grid, Ktab[2, ], rule = 2)
-  objNull$K_2_emp   <- approxfun(t_grid, Ktab[3, ], rule = 2)
-  objNull$use_SPA <- TRUE
-  return(objNull)
-}
-
-GetProb_SPA = function(objNull = objNull, G2N1 = G2N1, G2N0 = G2N0, N1set = N1set, N0 = N0, ztest = ztest, lower.tail) {
-  out = uniroot(K1_adj, c(-20,20), extendInt = "upX",
-                G2N1=G2N1, G2N0=G2N0, N1set=N1set, N0=N0, ztest=ztest, objNull=objNull)
+GetProb_SPA = function(objNull, G2N1, G2N0, N1set, N0, ztest, lower.tail) {
+  out = stats::uniroot(K1_adj, c(-20,20), extendInt = "upX",
+                       G2N1=G2N1, G2N0=G2N0, N1set=N1set, N0=N0, ztest=ztest, objNull=objNull)
   zeta = out$root
   
   k1 = K_org(zeta, G2N1=G2N1, G2N0=G2N0, N1set=N1set, N0=N0, objNull=objNull)
@@ -470,7 +410,7 @@ GetProb_SPA = function(objNull = objNull, G2N1 = G2N1, G2N0 = G2N0, N1set = N1se
   w = sign(zeta) * (2 * temp1)^{1/2}
   v = zeta * (k2)^{1/2}
   
-  pval = pnorm(w + 1/w * log(v/w), lower.tail = lower.tail)
+  pval = stats::pnorm(w + 1/w * log(v/w), lower.tail = lower.tail)
   return(pval)
 }
 
@@ -510,9 +450,7 @@ K2 = function(t, G2N1, G2N0, N1set, N0, objNull) {
   return(out)
 }
 
-
-### --- CCT from STAAR ---
-
+#' @export
 CCT <- function(pvals, weights=NULL){
   if(sum(is.na(pvals)) > 0) stop("Cannot have NAs in the p-values!")
   if((sum(pvals<0) + sum(pvals>1)) > 0) stop("All p-values must be between 0 and 1!")
@@ -543,14 +481,12 @@ CCT <- function(pvals, weights=NULL){
   if(cct.stat > 1e+15){
     pval <- (1/cct.stat)/pi
   }else{
-    pval <- 1-pcauchy(cct.stat)
+    pval <- 1-stats::pcauchy(cct.stat)
   }
   return(pval)
 }
 
-
-### --- Set-based tests (Burden / ACAT / SKAT) ---
-
+#' @export
 Burden = function(Geno, Score, Covariance, weight, objNull, use_SPA = NULL, SPA_filter = TRUE, SPA_filter_cutoff = 0.05, verbose = FALSE) {
   if (!inherits(Geno, "matrix") && !inherits(Geno, "Matrix")) stop("genotype is not a matrix!")
   if (is.null(use_SPA)) use_SPA = objNull$use_SPA
@@ -567,7 +503,7 @@ Burden = function(Geno, Score, Covariance, weight, objNull, use_SPA = NULL, SPA_
     Variance_k = as.vector(weight_k %*% Covariance %*% weight_k)
     
     Stest_k = Score_k^2 / Variance_k
-    pval_k = pchisq(Stest_k, df = 1, lower.tail = FALSE)
+    pval_k = stats::pchisq(Stest_k, df = 1, lower.tail = FALSE)
     
     if (use_SPA && (!SPA_filter || (SPA_filter && pval_k < SPA_filter_cutoff))) {
       G_w_k = G_tilde_w[,k,drop = F]
@@ -580,7 +516,7 @@ Burden = function(Geno, Score, Covariance, weight, objNull, use_SPA = NULL, SPA_
   return(pval_B)
 }
 
-
+#' @export
 ACAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_A, weight_B,
                 objNull, use_SPA = NULL, SPA_filter = TRUE, SPA_filter_cutoff = 0.05,
                 combine_ultra_rare = TRUE, ultra_rare_mac_cutoff = 60, verbose = FALSE) {
@@ -596,7 +532,7 @@ ACAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_A, weight_B,
   pval_A = NULL
   
   if(!combine_ultra_rare | length(ultra_rare_index) <= 1) {
-    if (verbose) print("             Apply Cauchy combination in ACAT test")
+    if (verbose) message("             Apply Cauchy combination in ACAT test")
     weight = weight_A
     for (k in 1:ncol(weight)) {
       weight_k = weight[, k]
@@ -605,12 +541,12 @@ ACAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_A, weight_B,
     }
     
   } else if (combine_ultra_rare & length(ultra_rare_index) == ncol(Geno)) {
-    if (verbose) print("             All the markers in this gene are ultra rare, apply burden test to replace ACAT test")
+    if (verbose) message("             All the markers in this gene are ultra rare, apply burden test to replace ACAT test")
     weight = weight_B
     pval_A = Burden(Geno, Score, Covariance, weight, objNull, use_SPA = use_SPA, SPA_filter = SPA_filter, SPA_filter_cutoff = SPA_filter_cutoff, verbose = FALSE)
     
   } else {
-    if (verbose) print(paste0("             Combine ", length(ultra_rare_index), " ultra rare variants in ACAT test"))
+    if (verbose) message(paste0("             Combine ", length(ultra_rare_index), " ultra rare variants in ACAT test"))
     weight_B_rare = matrix(weight_B[ultra_rare_index, ], nrow = length(ultra_rare_index))
     weight = rbind(colMeans(weight_A[ultra_rare_index, ]), weight_A[-ultra_rare_index, ])
     
@@ -634,7 +570,7 @@ ACAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_A, weight_B,
   return(pval_A)
 }
 
-
+#' @export
 SKAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_S, weight_B,
                 objNull, use_SPA = NULL, SPA_filter = TRUE, SPA_filter_cutoff = 0.05,
                 combine_ultra_rare = TRUE, ultra_rare_mac_cutoff = 60, verbose = FALSE) {
@@ -652,7 +588,7 @@ SKAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_S, weight_B,
   if (use_SPA) {
     
     if (combine_ultra_rare & length(ultra_rare_index) > 1) {
-      if (verbose) print(paste0("             Combine ", length(ultra_rare_index), " ultra rare variants in SKAT test"))
+      if (verbose) message(paste0("             Combine ", length(ultra_rare_index), " ultra rare variants in SKAT test"))
       
       if (length(ultra_rare_index) == ncol(Geno)) {
         pval_S = Burden(Geno = Geno, Score = Score, Covariance = Covariance, weight = weight_B, objNull = objNull,
@@ -690,7 +626,7 @@ SKAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_S, weight_B,
           Covariance_wk[2:ncol(Geno_new_wk), 2:ncol(Geno_new_wk)] = Covariance_sub
           
           Pvalue_wk = c(pval_B_rare[k], Pvalue_sub)
-          z_tilde = qnorm(Pvalue_wk/2, mean = 0, sd = 1, lower.tail = F, log.p = F)
+          z_tilde = stats::qnorm(Pvalue_wk/2, mean = 0, sd = 1, lower.tail = F, log.p = F)
           weight_k = weight_S_new[, k]
           Qtest = sum(z_tilde^2 * weight_k^2 * diag(Covariance_wk))
           
@@ -709,7 +645,7 @@ SKAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_S, weight_B,
       }
       
     } else {
-      z_tilde = qnorm(Pvalue/2, mean = 0, sd = 1, lower.tail = F, log.p = F)
+      z_tilde = stats::qnorm(Pvalue/2, mean = 0, sd = 1, lower.tail = F, log.p = F)
       for (k in 1:ncol(weight_S)) {
         weight_k = weight_S[, k]
         Qtest = sum(z_tilde^2 * weight_k^2 * diag(Covariance))
@@ -747,7 +683,7 @@ SKAT = function(Geno, Score, Covariance, Pvalue, MAC = NULL, weight_S, weight_B,
   return(pval_S)
 }
 
-
+#' @export
 OrdinalSTAAR_O = function(Geno, objNull, annotation_rank = NULL, MAC = NULL,
                           use_SPA = NULL, SPA_filter = TRUE, SPA_filter_cutoff = 0.05,
                           weight_A, weight_B, weight_S,
@@ -765,13 +701,13 @@ OrdinalSTAAR_O = function(Geno, objNull, annotation_rank = NULL, MAC = NULL,
   if(use_SPA) Pvalue = single_test$result$Pvalue_SPA else Pvalue = single_test$result$Pvalue
   
   ## set-based
-  if (verbose) print(paste0("SKAT test:   begin at ", Sys.time()))
+  if (verbose) message(paste0("SKAT test:   begin at ", Sys.time()))
   Pvalue_S = SKAT(Geno, Score, Covariance, Pvalue, MAC, weight_S, weight_B, objNull, use_SPA, SPA_filter, SPA_filter_cutoff, combine_ultra_rare, ultra_rare_mac_cutoff, verbose)
   
-  if (verbose) print(paste0("ACAT test:   begin at ", Sys.time()))
+  if (verbose) message(paste0("ACAT test:   begin at ", Sys.time()))
   Pvalue_A = ACAT(Geno, Score, Covariance, Pvalue, MAC, weight_A, weight_B, objNull, use_SPA, SPA_filter, SPA_filter_cutoff, combine_ultra_rare, ultra_rare_mac_cutoff, verbose)
   
-  if (verbose) print(paste0("Burden test: begin at ", Sys.time()))
+  if (verbose) message(paste0("Burden test: begin at ", Sys.time()))
   Pvalue_B = Burden(Geno, Score, Covariance, weight_B, objNull, use_SPA, SPA_filter, SPA_filter_cutoff, verbose)
   
   ## combine
@@ -814,7 +750,7 @@ OrdinalSTAAR_Manhattan = function(result_data, chr = "Chr", pos = "pos", name = 
                                   pval = c("pLoF", "pLoF+D", "Missense", "Disruptive Missense", "Synonymous"),
                                   pch = c(0, 1, 2, 3, 4), max_y,
                                   sugline = 5e-7, genoline = 5e-7, annotateP = NULL,
-                                  col=c("gray30", "gray80"), legned_title = "Functional Categories") {
+                                  col=c("gray30", "gray80"), legend_title = "Functional Categories") {
   
   result_data = result_data[order(result_data[, chr], result_data[, pos]), ]
   
@@ -847,7 +783,7 @@ OrdinalSTAAR_Manhattan = function(result_data, chr = "Chr", pos = "pos", name = 
   xmin = floor(max(result_data$pos_new) * -0.01)
   col = rep_len(col, max(result_data$index))
   
-  if (is.null(max_y)) {
+  if (missing(max_y)) {
     def_args <- list(xaxt='n', bty='o', xaxs='i', yaxs='i', las=1, pch=20,
                      cex.axis=1.5, cex.lab=1.5, cex=1.5,
                      xlim=c(xmin,xmax), ylim=c(0, ceiling(max(result_data[, pval], na.rm = T))),
@@ -858,14 +794,14 @@ OrdinalSTAAR_Manhattan = function(result_data, chr = "Chr", pos = "pos", name = 
                      xlim=c(xmin,xmax), ylim=c(0,max_y),
                      xlab=xlabel, ylab=expression(-log[10](italic(p))))
   }
-  par(mar = c(5, 4, 6, 2) + 1.5)
+  graphics::par(mar = c(5, 4, 6, 2) + 1.5)
   do.call("plot", c(NA, def_args))
-  axis(1, at=ticks, labels=labs, tck = 0, cex.axis = 1.5)
+  graphics::axis(1, at=ticks, labels=labs, tck = 0, cex.axis = 1.5)
   
   if (length(pval) == 1) {
     icol=1
     for (i in unique(result_data$index)) {
-      points(result_data[result_data$index==i,"pos_new"], result_data[result_data$index==i,pval], col=col[icol], pch=20,)
+      graphics::points(result_data[result_data$index==i,"pos_new"], result_data[result_data$index==i,pval], col=col[icol], pch=20,)
       icol=icol+1
     }
   } else if (length(pval) > 1) {
@@ -873,7 +809,7 @@ OrdinalSTAAR_Manhattan = function(result_data, chr = "Chr", pos = "pos", name = 
       pch_j = pch[j]
       icol=1
       for (i in unique(result_data$index)) {
-        points(result_data[result_data$index==i,"pos_new"], result_data[result_data$index==i,pval[j]], col=col[icol], pch=pch_j)
+        graphics::points(result_data[result_data$index==i,"pos_new"], result_data[result_data$index==i,pval[j]], col=col[icol], pch=pch_j)
         icol=icol+1
       }
     }
@@ -881,50 +817,50 @@ OrdinalSTAAR_Manhattan = function(result_data, chr = "Chr", pos = "pos", name = 
   
   sugline = -log10(sugline)
   genoline = -log10(genoline)
-  usr <- par("usr")
-  clip(usr[1], usr[2], usr[3], usr[4])
-  if (sugline) abline(h=(sugline), col="blue", lwd = 2)
-  if (genoline) abline(h=genoline, col="red", lwd = 2)
+  usr <- graphics::par("usr")
+  graphics::clip(usr[1], usr[2], usr[3], usr[4])
+  if (sugline) graphics::abline(h=(sugline), col="blue", lwd = 2)
+  if (genoline) graphics::abline(h=genoline, col="red", lwd = 2)
   
   if (!is.null(annotateP)) {
     annotateP = -log10(annotateP)
     if (length(pval) == 1) {
       topHits = result_data[which(result_data[, pval] >= annotateP), ]
-      par(xpd = TRUE)
+      graphics::par(xpd = TRUE)
       if (nrow(topHits) != 0) {
-        with(topHits, textxy(pos_new, topHits[, pval], offset = 0.625,
-                             labs = topHits[, name], cex = 1.2))
+        with(topHits, calibrate::textxy(pos_new, topHits[, pval], offset = 0.625,
+                                        labs = topHits[, name], cex = 1.2))
       }
     } else if (length(pval) > 1) {
       for (j in pval) {
         topHits = result_data[which(result_data[, j] >= annotateP), ]
-        par(xpd = TRUE)
+        graphics::par(xpd = TRUE)
         if (nrow(topHits) != 0) {
-          with(topHits, textxy(pos_new, topHits[, j], offset = 0.625,
-                               labs = topHits[, name], cex = 1.2))
+          with(topHits, calibrate::textxy(pos_new, topHits[, j], offset = 0.625,
+                                          labs = topHits[, name], cex = 1.2))
         }
       }
     }
   }
   
   if (length(pval) <= 5) {
-    legend("top", legend = pval, pch = pch, title = legned_title, bty = "n",
-           text.font = 1, cex = 1.4, ncol = length(pval), xpd = TRUE, inset = -0.2)
+    graphics::legend("top", legend = pval, pch = pch, title = legend_title, bty = "n",
+                     text.font = 1, cex = 1.4, ncol = length(pval), xpd = TRUE, inset = -0.2)
   } else if (length(pval) > 5) {
     temp_len = floor(length(pval)/2)
-    legend("top", legend = pval[1:temp_len], pch = pch[1:temp_len], title = legned_title, bty = "n",
-           text.font = 1, cex = 1.4, ncol = temp_len, xpd = TRUE, inset = -0.2)
-    legend("top", legend = pval[(temp_len+1):length(pval)], pch = pch[(temp_len+1):length(pval)], bty = "n",
-           text.font = 1, cex = 1.4, ncol = (length(pval)-temp_len), xpd = TRUE, inset = -0.1)
+    graphics::legend("top", legend = pval[1:temp_len], pch = pch[1:temp_len], title = legend_title, bty = "n",
+                     text.font = 1, cex = 1.4, ncol = temp_len, xpd = TRUE, inset = -0.2)
+    graphics::legend("top", legend = pval[(temp_len+1):length(pval)], pch = pch[(temp_len+1):length(pval)], bty = "n",
+                     text.font = 1, cex = 1.4, ncol = (length(pval)-temp_len), xpd = TRUE, inset = -0.1)
   }
-  par(xpd = FALSE)
+  graphics::par(xpd = FALSE)
 }
 
 
 #' @export
 OrdinalSTAAR_QQplot = function(pval_result, main = NULL, pch = NULL, max_x = NULL, max_y = NULL,
                                legend_lable = c("pLoF", "pLoF+D", "Missense", "Disruptive Missense", "Synonymous"),
-                               legned_title = "Functional Categories") {
+                               legend_title = "Functional Categories") {
   
   if (inherits(pval_result, "numeric")) {
     pval_result = sort(pval_result)
@@ -933,32 +869,32 @@ OrdinalSTAAR_QQplot = function(pval_result, main = NULL, pch = NULL, max_x = NUL
     }
     if (is.null(main)) {
       if (is.null(max_x)) {
-        plot(-log10(ppoints(pval_result)), -log10(pval_result), pch = 20, cex = 0.5, col="grey40",
-             xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
-             ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3)
+        graphics::plot(-log10(stats::ppoints(pval_result)), -log10(pval_result), pch = 20, cex = 0.5, col="grey40",
+                       xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
+                       ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3)
       } else {
-        plot(-log10(ppoints(pval_result)), -log10(pval_result), pch = 20, cex = 0.5, col="grey40",
-             xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
-             ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3, xlim = c(0, max_x))
+        graphics::plot(-log10(stats::ppoints(pval_result)), -log10(pval_result), pch = 20, cex = 0.5, col="grey40",
+                       xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
+                       ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3, xlim = c(0, max_x))
       }
     } else {
       if (is.null(max_x)) {
-        plot(-log10(ppoints(pval_result)), -log10(pval_result), pch = 20, cex = 0.5, col="grey40",
-             xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
-             ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3, main = main)
+        graphics::plot(-log10(stats::ppoints(pval_result)), -log10(pval_result), pch = 20, cex = 0.5, col="grey40",
+                       xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
+                       ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3, main = main)
       } else {
-        plot(-log10(ppoints(pval_result)), -log10(pval_result), pch = 20, cex = 0.5, col="grey40",
-             xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
-             ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3, xlim = c(0, max_x), main = main)
+        graphics::plot(-log10(stats::ppoints(pval_result)), -log10(pval_result), pch = 20, cex = 0.5, col="grey40",
+                       xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
+                       ylim = c(0, max_y), xlim = c(0, max_x), cex.lab = 1.3, cex.axis = 1.3, main = main)
       }
     }
-    abline(a = 0, b = 1, lty = "longdash", lwd = 1.5)
+    graphics::abline(a = 0, b = 1, lty = "longdash", lwd = 1.5)
     
   } else if (inherits(pval_result, c("data.frame", "matrix"))) {
     if (is.null(max_y)) {
       max_y = ceiling(-log10(min(pval_result, na.rm = T)))
     }
-    par(mar = c(5, 4, 2, 2) + 1)
+    graphics::par(mar = c(5, 4, 2, 2) + 1)
     if (is.null(pch)) pch = c(0:(ncol(pval_result)-1))
     
     for (j in 1:ncol(pval_result)) {
@@ -968,36 +904,36 @@ OrdinalSTAAR_QQplot = function(pval_result, main = NULL, pch = NULL, max_x = NUL
       if (j == 1) {
         if (is.null(main)) {
           if (is.null(max_x)) {
-            plot(-log10(ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40",
-                 xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
-                 ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3)
+            graphics::plot(-log10(stats::ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40",
+                           xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
+                           ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3)
           } else {
-            plot(-log10(ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40",
-                 xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
-                 ylim = c(0, max_y), xlim = c(0, max_x), cex.lab = 1.3, cex.axis = 1.3)
+            graphics::plot(-log10(stats::ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40",
+                           xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
+                           ylim = c(0, max_y), xlim = c(0, max_x), cex.lab = 1.3, cex.axis = 1.3)
           }
         } else {
           if (is.null(max_x)) {
-            plot(-log10(ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40",
-                 xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
-                 ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3, main = main)
+            graphics::plot(-log10(stats::ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40",
+                           xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
+                           ylim = c(0, max_y), cex.lab = 1.3, cex.axis = 1.3, main = main)
           } else {
-            plot(-log10(ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40",
-                 xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
-                 ylim = c(0, max_y), xlim = c(0, max_x), cex.lab = 1.3, cex.axis = 1.3, main = main)
+            graphics::plot(-log10(stats::ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40",
+                           xlab = expression(Expected~~-log[10](p)), ylab = expression(Observed~~-log[10](p)),
+                           ylim = c(0, max_y), xlim = c(0, max_x), cex.lab = 1.3, cex.axis = 1.3, main = main)
           }
         }
       } else {
-        points(-log10(ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40")
+        graphics::points(-log10(stats::ppoints(pval_result_temp)), -log10(pval_result_temp), pch = pch[j], cex = 0.5, col="grey40")
       }
     }
-    abline(a = 0, b = 1, lty = "longdash", lwd = 1.5)
-    if (is.null(legned_title) | isFALSE(legned_title)){
-      legend(x = "topleft", legend = legend_lable, pch = pch,
-             text.font = 2, cex = 1.3, ncol = 1, xpd = TRUE)
+    graphics::abline(a = 0, b = 1, lty = "longdash", lwd = 1.5)
+    if (is.null(legend_title) | isFALSE(legend_title)){
+      graphics::legend(x = "topleft", legend = legend_lable, pch = pch,
+                       text.font = 2, cex = 1.3, ncol = 1, xpd = TRUE)
     } else {
-      legend(x = "topleft", legend = legend_lable, pch = pch, title = legned_title,
-             text.font = 2, cex = 1.3, ncol = 1, xpd = TRUE)
+      graphics::legend(x = "topleft", legend = legend_lable, pch = pch, title = legend_title,
+                       text.font = 2, cex = 1.3, ncol = 1, xpd = TRUE)
     }
   }
 }
