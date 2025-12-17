@@ -237,7 +237,6 @@ GeneCentricCoding <- function(gene_name, genofile, objNull, genes_info, variant_
                          verbose = verbose)
   }
   
-  ## mirror SurvSTAAR behavior: clean up at the end
   seqResetFilter(genofile)
   gc()
   
