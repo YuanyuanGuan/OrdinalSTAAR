@@ -1,3 +1,55 @@
+#' Compute Empirical CGF for Residuals (Empirical SPA)
+#'
+#' @param residuals Numeric vector of residuals (e.g., scaled score residuals).
+#' @param range Numeric vector of length 2, range for the CGF grid.
+#' @param length.out Integer, number of grid points.
+#' @param verbose Logical, print progress.
+#' @importFrom stats qcauchy approxfun
+Compute_Empirical_CGF <- function(residuals, range = c(-100,100), length.out = 1e4, verbose = TRUE) {
+  
+  # 1. Generate grid points (t) focusing on tails using Cauchy distribution
+  idx0 <- stats::qcauchy(1:length.out/(length.out+1))
+  idx1 <- idx0 * max(range) / max(idx0)
+  
+  cumul <- NULL
+  
+  if(verbose) message("   ... Calculating empirical CGF for SPA (this may take a moment) ...")
+  
+  # 2. Loop to calculate Empirical MGF and CGF
+  #    K(t) = log( E[e^{rt}] )
+  #    Using vectorization where possible for speed, but loop is safer for memory on huge N
+  
+  # Pre-calculate exp only once if memory allows, or loop. 
+  # Here we loop to follow SurvSTAAR style which is memory safe.
+  
+  for(i in 1:length(idx1)){
+    t <- idx1[i]
+    
+    # Calculate MGF moments
+    exp_res <- exp(residuals * t)
+    M0 <- mean(exp_res)                  # E[e^{rt}]
+    M1 <- mean(residuals * exp_res)      # E[r * e^{rt}]
+    M2 <- mean(residuals^2 * exp_res)    # E[r^2 * e^{rt}]
+    
+    # Convert to CGF cumulants
+    K0 <- log(M0)                        # K(t)
+    K1 <- M1/M0                          # K'(t)
+    K2 <- (M0*M2 - M1^2) / M0^2          # K''(t)
+    
+    cumul <- rbind(cumul, c(t, K0, K1, K2))
+  }
+  
+  # 3. Create approximation functions (The "Dictionary")
+  K_org_emp <- stats::approxfun(cumul[,1], cumul[,2], rule=2)
+  K_1_emp   <- stats::approxfun(cumul[,1], cumul[,3], rule=2)
+  K_2_emp   <- stats::approxfun(cumul[,1], cumul[,4], rule=2)
+  
+  return(list(K_org_emp = K_org_emp, K_1_emp = K_1_emp, K_2_emp = K_2_emp))
+}
+
+
+
+
 #' Fit Null Model for Ordinal Traits using Proportional Odds Model
 #'
 #' This function fits a null model for ordinal traits in preparation for
@@ -166,10 +218,6 @@ Ordinal_NullModel <- function(phenofile, ordCol, sampleCol, covCol = NULL, offse
 
   if (!is.null(offsetCol)) offset_vec <- as.numeric(pheno[[offsetCol]]) else offset_vec <- rep(0, n)
 
-  # Fake Fitted
-  working_residuals <- res_null / s_vec_safe
-  fake_fitted <- as.numeric(pheno[[ordCol]]) - working_residuals
-
   obj <- list(
     scaled.residuals  = res_null,
     Sigma_i           = W_mat,
@@ -179,11 +227,6 @@ Ordinal_NullModel <- function(phenofile, ordCol, sampleCol, covCol = NULL, offse
     X                 = X,
     id_include        = pheno[[sampleCol]],
     sample.id         = pheno[[sampleCol]],
-    family            = list(family = "gaussian", link = "identity"),
-    fitted.values     = fake_fitted,
-    residuals         = working_residuals,
-    weights           = s_vec_safe,
-    prior.weights     = rep(1, n),
     offset            = offset_vec,
     relatedness       = FALSE,
     sparse_kins       = TRUE,
@@ -201,12 +244,20 @@ Ordinal_NullModel <- function(phenofile, ordCol, sampleCol, covCol = NULL, offse
     model             = pheno,
     related           = FALSE
   )
+  
+  if (use_SPA) {
+    cgf_functions <- Compute_Empirical_CGF(residuals = obj$scaled.residuals, 
+                                           range = range, 
+                                           length.out = length.out, 
+                                           verbose = verbose)
+    
+    obj <- c(obj, cgf_functions)
+  }
 
   obj$n.pheno <- 1
   obj$n.sample <- n
   obj$dispersion <- 1
-  class(obj) <- c("staar_nullmodel", "gaussian", "list")
-  # -----------------------------------------------------------
+  class(obj) <- c("staar_nullmodel", "ordinal", "list")
 
   if(verbose) message("Null Model fitting completed successfully.")
   return(obj)
